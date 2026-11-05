@@ -1,0 +1,53 @@
+[package]
+name = "ogpeek"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Fast link previews: reads a page's <head> and stops, parses Open Graph, Twitter cards, icons and feeds in one pass, with SSRF protection and a coalescing cache."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/0x0077/ogpeek"
+readme = "README.md"
+keywords = ["opengraph", "link-preview", "unfurl", "metadata", "scraper"]
+categories = ["web-programming", "parser-implementations", "network-programming"]
+
+[features]
+default = ["fetch"]
+## Network fetching with `Peeker` (reqwest + tokio). Turn off to use only the parser.
+fetch = ["dep:reqwest", "dep:tokio"]
+## Serialize and deserialize `Page` with serde.
+serde = ["dep:serde"]
+## The `ogpeek` command line tool.
+cli = ["fetch", "serde", "dep:serde_json", "tokio/rt-multi-thread", "tokio/macros"]
+
+[dependencies]
+encoding_rs = "0.8.35"
+memchr = "2.7"
+url = "2.5"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "gzip", "brotli", "deflate", "zstd"], optional = true }
+tokio = { version = "1.40", features = ["net", "sync", "time"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+criterion = { version = "0.5", default-features = false }
+scraper = "0.20"
+
+[[bin]]
+name = "ogpeek"
+required-features = ["cli"]
+
+[[bench]]
+name = "parse"
+harness = false
+
+[package.metadata.docs.rs]
+all-features = true
+
+[[test]]
+name = "fetch"
+required-features = ["fetch"]
+
+[[example]]
+name = "timing"
+required-features = ["fetch"]
