@@ -59,6 +59,16 @@ fn routes(path: &str) -> (String, Vec<u8>, bool) {
                 true,
             )
         }
+        "/early" => {
+            // All the tags up front, then a long head that never ends.
+            let mut b = String::from(
+                "<html><head><title>T</title><meta name=description content=D>\
+                <meta property=og:image content=/i.png><link rel=icon href=/f.png><script>",
+            );
+            b.push_str(&"x".repeat(40_000));
+            let (h, _, _) = ok("text/html", "");
+            (h.replace("connection: close\r\n", ""), b.into_bytes(), true)
+        }
         "/moved" => (
             "HTTP/1.1 301 Moved\r\nlocation: /page\r\nconnection: close\r\n\r\n".into(),
             vec![],
@@ -105,6 +115,20 @@ async fn stops_reading_at_the_end_of_head() {
     let t = Instant::now();
     let p = peeker().peek(&format!("{base}/slow")).await.unwrap();
     assert_eq!(p.title.as_deref(), Some("Fast"));
+    assert!(
+        t.elapsed() < Duration::from_secs(2),
+        "took {:?}",
+        t.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn stops_once_the_preview_is_complete() {
+    let (base, _) = serve(routes).await;
+    let t = Instant::now();
+    let p = peeker().peek(&format!("{base}/early")).await.unwrap();
+    assert_eq!(p.title.as_deref(), Some("T"));
+    assert_eq!(p.favicon.as_deref(), Some(format!("{base}/f.png").as_str()));
     assert!(
         t.elapsed() < Duration::from_secs(2),
         "took {:?}",

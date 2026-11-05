@@ -82,7 +82,7 @@ impl Default for Builder {
             .to_owned(),
             timeout: Duration::from_secs(8),
             connect_timeout: Duration::from_secs(3),
-            max_head_bytes: 512 << 10,
+            max_head_bytes: 1 << 20,
             max_body_bytes: 2 << 20,
             max_redirects: 5,
             allow_private: false,
@@ -113,7 +113,9 @@ impl Builder {
         self.connect_timeout = t;
         self
     }
-    /// Most bytes read while looking for the end of `<head>`. Default 512 KiB.
+    /// Most bytes read while looking for the end of `<head>`. Default 1 MiB (some video
+    /// sites put their tags after 750 KiB of head). Reading stops earlier as soon as the
+    /// title, description, image and an icon have all been seen.
     pub fn max_head_bytes(mut self, n: usize) -> Self {
         self.max_head_bytes = n;
         self
@@ -297,16 +299,23 @@ impl Peeker {
             }
             let mut body = Vec::with_capacity(16 << 10);
             let mut stopped = false;
+            let mut checked = 0;
             while let Some(chunk) = res.chunk().await? {
                 let from = body.len().saturating_sub(6);
                 body.extend_from_slice(&chunk);
-                if head_end(&body[from..]).is_some() {
+                if head_end(&body[from..]).is_some() || body.len() >= opts.max_head_bytes {
                     stopped = true;
                     break;
                 }
-                if body.len() >= opts.max_head_bytes {
-                    stopped = true;
-                    break;
+                // Some heads run to hundreds of kilobytes of scripts after the tags we need.
+                // Every 16 KiB, check whether the preview is already complete.
+                if body.len() - checked >= 16 << 10 {
+                    checked = body.len();
+                    let upto = memchr::memrchr(b'>', &body).map_or(0, |i| i + 1);
+                    if complete(&parse_bytes(&body[..upto], url.as_str(), ct.as_deref())) {
+                        stopped = true;
+                        break;
+                    }
                 }
             }
             let mut page = parse_bytes(&body, url.as_str(), ct.as_deref());
@@ -432,6 +441,11 @@ impl Peeker {
         }
         Err(Error::TooManyRedirects)
     }
+}
+
+/// Everything a preview card shows is there: title, description, image and a declared icon.
+fn complete(p: &Page) -> bool {
+    p.title.is_some() && p.description.is_some() && !p.images.is_empty() && !p.icons.is_empty()
 }
 
 fn content_type(res: &reqwest::Response) -> Option<String> {
