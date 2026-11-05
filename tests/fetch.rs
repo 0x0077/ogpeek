@@ -7,8 +7,13 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-/// Serves each request with `answer(path)`. Returns the base URL and a request counter.
-async fn serve(answer: fn(&str) -> (String, Vec<u8>, bool)) -> (String, Arc<AtomicUsize>) {
+/// How many times each path has been asked, across all tests (paths are unique per test).
+static SEEN: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, usize>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Serves each request with `answer(path, nth time this path was asked)`. A head of
+/// `HANG` never answers. Returns the base URL and a request counter.
+async fn serve(answer: fn(&str, usize) -> (String, Vec<u8>, bool)) -> (String, Arc<AtomicUsize>) {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", l.local_addr().unwrap());
     let hits = Arc::new(AtomicUsize::new(0));
@@ -23,8 +28,18 @@ async fn serve(answer: fn(&str) -> (String, Vec<u8>, bool)) -> (String, Arc<Atom
                 let req = String::from_utf8_lossy(&buf[..n]);
                 let path = req.split_whitespace().nth(1).unwrap_or("/").to_owned();
                 h.fetch_add(1, Ordering::SeqCst);
+                let nth = {
+                    let mut seen = SEEN.lock().unwrap();
+                    let n = seen.entry(path.clone()).or_default();
+                    *n += 1;
+                    *n
+                };
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                let (head, body, hang) = answer(&path);
+                let (head, body, hang) = answer(&path, nth);
+                if head == "HANG" {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    return;
+                }
                 let _ = s.write_all(head.as_bytes()).await;
                 let _ = s.write_all(&body).await;
                 if hang {
@@ -45,8 +60,20 @@ fn ok(ct: &str, body: &str) -> (String, Vec<u8>, bool) {
     )
 }
 
-fn routes(path: &str) -> (String, Vec<u8>, bool) {
+fn status(code: &str) -> (String, Vec<u8>, bool) {
+    (
+        format!("HTTP/1.1 {code}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"),
+        vec![],
+        false,
+    )
+}
+
+fn routes(path: &str, nth: usize) -> (String, Vec<u8>, bool) {
     match path {
+        "/hang" | "/abandoned" => ("HANG".into(), vec![], false),
+        "/flaky" if nth == 1 => status("503 Service Unavailable"),
+        "/goes-down" if nth > 1 => status("500 Internal Server Error"),
+        "/goes-down" => ok("text/html", "<head><title>Up</title></head>"),
         "/slow" => {
             // Sends the head, then never finishes the body.
             let (h, b, _) = ok(
@@ -239,4 +266,74 @@ async fn refuses_internal_addresses_by_default() {
         pk.peek("http://user:pw@example.com/").await.unwrap_err(),
         ogpeek::Error::InvalidUrl
     );
+}
+
+#[tokio::test]
+async fn a_peek_never_outlives_its_timeout() {
+    let (base, _) = serve(routes).await;
+    let pk = ogpeek::Peeker::builder()
+        .allow_private(true)
+        .timeout(Duration::from_millis(800))
+        .build()
+        .unwrap();
+    let t = Instant::now();
+    assert_eq!(
+        pk.peek(&format!("{base}/hang")).await.unwrap_err(),
+        ogpeek::Error::Timeout
+    );
+    assert!(
+        t.elapsed() < Duration::from_millis(1300),
+        "took {:?}",
+        t.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn retries_once_on_503() {
+    let (base, hits) = serve(routes).await;
+    let pk = peeker();
+    let p = pk.peek(&format!("{base}/flaky")).await.unwrap();
+    assert_eq!(p.title.as_deref(), Some("Other"));
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+    assert_eq!(pk.stats().retries, 1);
+}
+
+#[tokio::test]
+async fn serves_stale_while_refreshing_and_when_the_site_is_down() {
+    let (base, _) = serve(routes).await;
+    let pk = ogpeek::Peeker::builder()
+        .allow_private(true)
+        .retry(false)
+        .cache_ttl(Duration::from_millis(100))
+        .stale_ttl(Duration::from_secs(60))
+        .error_ttl(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let url = format!("{base}/goes-down");
+    assert_eq!(pk.peek(&url).await.unwrap().title.as_deref(), Some("Up"));
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    // Expired: answered at once from the old copy while a refresh runs.
+    let t = Instant::now();
+    assert_eq!(pk.peek(&url).await.unwrap().title.as_deref(), Some("Up"));
+    assert!(t.elapsed() < Duration::from_millis(20));
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let s = pk.stats();
+    assert_eq!((s.stale_hits, s.errors, s.stale_on_error), (1, 1, 1));
+    // The refresh failed: the old copy is kept, and the dead site is not asked again yet.
+    assert_eq!(pk.peek(&url).await.unwrap().title.as_deref(), Some("Up"));
+    assert_eq!(pk.stats().fetches, 2);
+    assert!(pk.peek_fresh(&url).await.is_ok());
+}
+
+#[tokio::test]
+async fn abandoned_requests_leave_nothing_behind() {
+    let (base, _) = serve(routes).await;
+    let pk = peeker();
+    let r = tokio::time::timeout(
+        Duration::from_millis(200),
+        pk.peek(&format!("{base}/abandoned")),
+    )
+    .await;
+    assert!(r.is_err());
+    assert_eq!(pk.stats().in_flight, 0);
 }

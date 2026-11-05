@@ -23,6 +23,9 @@ pub enum Error {
     Connect,
     /// Anything else that went wrong on the wire.
     Network(String),
+    /// The site answered with a bot check or an access-denied page instead of the page,
+    /// so its title would be wrong ("Just a moment...", "Robot Check").
+    Challenge,
 }
 
 impl fmt::Display for Error {
@@ -35,6 +38,7 @@ impl fmt::Display for Error {
             Error::Timeout => f.write_str("timed out"),
             Error::Connect => f.write_str("could not connect"),
             Error::Network(e) => write!(f, "network error: {e}"),
+            Error::Challenge => f.write_str("the site answered with a bot check"),
         }
     }
 }

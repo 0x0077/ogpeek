@@ -46,6 +46,27 @@ it and to avoid paying it twice. Measured from a server in Los Angeles:
 
 The first request in a new process also loads the system's TLS root certificates once.
 
+## Dependable under load
+
+- **A peek never takes longer than its timeout**, redirects, retries and oEmbed included
+  (8 seconds by default).
+- **One retry** after 200 ms when a connection fails or the server answers 502, 503 or 504.
+- **Stale while revalidate.** Past its cache time, a preview is returned at once and
+  refreshed in the background.
+- **Stale if error.** When a refresh fails, the last good preview is kept, and the failing
+  site is not asked again until the error time passes.
+- **Bot checks are errors, not titles.** "Just a moment...", "Robot Check", "验证码" and
+  similar pages come back as `Error::Challenge` instead of a preview with the wrong title.
+- **Nothing leaks.** Requests abandoned by every caller are cleaned up; the cache, the DNS
+  cache and every read are bounded.
+- **`Peeker::stats()`** reports cache hits, stale hits, fetches, errors and retries for
+  your logs.
+- **The parser never panics.** Tests feed it random bytes, random HTML fragments with
+  multibyte text, and a page cut at every byte.
+
+ogpeek was built for [Bioly](https://bioly.link), whose server fetches every link card on
+its bio pages through it.
+
 ## Safe to run on a server
 
 A link preview service fetches URLs that strangers type. ogpeek refuses to connect to:
@@ -127,6 +148,7 @@ let peeker = ogpeek::Peeker::builder()
     .user_agent("MyApp/1.0 (+https://example.com)")
     .timeout(Duration::from_secs(5))
     .cache_ttl(Duration::from_secs(3600))
+    .stale_ttl(Duration::from_secs(86400))
     .accept_language("ja,en;q=0.8")
     .host_header("api.github.com", "authorization", "Bearer …") // sent to that host only
     .build()?;
@@ -159,4 +181,3 @@ Minimum Rust version: 1.88.
 
 MIT or Apache-2.0, at your option.
 
-ogpeek is built and used by [Bioly](https://bioly.link) for the link cards on bio pages.

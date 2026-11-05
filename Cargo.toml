@@ -55,3 +55,10 @@ required-features = ["fetch"]
 [[example]]
 name = "compare"
 required-features = ["fetch"]
+
+[[example]]
+name = "survey"
+required-features = ["fetch"]
+
+[[example]]
+name = "parse_file"
