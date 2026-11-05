@@ -177,3 +177,49 @@ fn survives_broken_html() {
     let p = parse("<meta property=og:title content=é>", URL);
     assert_eq!(p.title.as_deref(), Some("é"));
 }
+
+#[test]
+fn json_ld_fills_gaps() {
+    let p = parse(
+        r#"<head><title>Linen shirt | Atelier Shop</title>
+        <script type="application/ld+json">{"@context":"https://schema.org","@type":"Product",
+          "name":"Linen shirt","description":"Washed linen, made in Porto.","image":"/img/shirt.jpg",
+          "brand":{"@type":"Brand","name":"Atelier"},"offers":{"price":"49.00","priceCurrency":"EUR"}}</script>
+        </head>"#,
+        URL,
+    );
+    assert_eq!(p.title.as_deref(), Some("Linen shirt"));
+    assert_eq!(
+        p.description.as_deref(),
+        Some("Washed linen, made in Porto.")
+    );
+    assert_eq!(p.image().unwrap().url, "https://example.com/img/shirt.jpg");
+    assert_eq!(p.author.as_deref(), Some("Atelier"));
+    let s = p.schema.unwrap();
+    assert_eq!(
+        (s.kind.as_str(), s.price.as_deref(), s.currency.as_deref()),
+        ("Product", Some("49.00"), Some("EUR"))
+    );
+}
+
+#[test]
+fn open_graph_still_wins_over_json_ld() {
+    let p = parse(
+        r#"<meta property="og:title" content="OG"><script type="application/ld+json">
+        {"@type":"Article","headline":"LD","datePublished":"2026-11-01"}</script>
+        <script type="application/ld+json">{"@type":"WebSite","name":"Site"}</script>"#,
+        URL,
+    );
+    assert_eq!(p.title.as_deref(), Some("OG"));
+    assert_eq!(p.published.as_deref(), Some("2026-11-01"));
+    assert_eq!(p.schema.unwrap().kind, "Article");
+}
+
+#[test]
+fn weak_json_ld_does_not_replace_the_title_tag() {
+    let p = parse(
+        r#"<title>Home | Studio</title><script type="application/ld+json">{"@type":"Organization","name":"Studio"}</script>"#,
+        URL,
+    );
+    assert_eq!(p.title.as_deref(), Some("Home | Studio"));
+}

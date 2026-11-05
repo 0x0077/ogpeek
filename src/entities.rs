@@ -65,9 +65,61 @@ fn reference(name: &str) -> Option<char> {
     })
 }
 
-/// Trims and turns every run of whitespace into one space.
+/// Text for display: decodes character references (twice, for sites that escape them
+/// twice), removes HTML tags that some sites leave in descriptions, and collapses
+/// whitespace. Use [`decode`] for anything that is not prose.
+pub fn clean_text(s: &str) -> String {
+    let once = decode(s);
+    let twice = if once.contains('&') {
+        decode(&once)
+    } else {
+        once
+    };
+    if twice.contains('<') {
+        collapse(&strip_tags(&twice))
+    } else {
+        twice
+    }
+}
+
+/// Removes `<tag ...>`, `</tag>` and `<!-- -->`, keeping a `<` that does not start a tag.
+fn strip_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('<') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        let tag = after.starts_with(|c: char| c.is_ascii_alphabetic() || c == '/' || c == '!');
+        match after.find('>').filter(|_| tag) {
+            Some(j) => {
+                out.push(' ');
+                rest = &after[j + 1..];
+            }
+            None => {
+                out.push('<');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Direction overrides and invisible marks that can make text display as something else.
+fn invisible(c: char) -> bool {
+    matches!(c, '\u{200B}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
+}
+
+/// Trims, drops direction overrides, and turns every run of whitespace into one space.
 pub(crate) fn collapse(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
+    let cleaned: String;
+    let s = if s.contains(invisible) {
+        cleaned = s.chars().filter(|c| !invisible(*c)).collect();
+        &cleaned
+    } else {
+        s
+    };
     for w in s.split_whitespace() {
         if !out.is_empty() {
             out.push(' ');
@@ -91,5 +143,13 @@ mod tests {
         assert_eq!(decode("AT&T &unknown; x"), "AT&T &unknown; x");
         assert_eq!(decode("  many\n\t spaces  "), "many spaces");
         assert_eq!(decode("&#0;x"), "&#0;x");
+        assert_eq!(
+            super::clean_text(
+                "From the album,&amp;nbsp;featured <a href=\"x\">here</a> &lt;3 a < b"
+            ),
+            "From the album, featured here <3 a < b"
+        );
+        assert_eq!(decode("\u{202E}\u{202D}bees\u{202C}"), "bees");
+        assert_eq!(decode("👩\u{200D}💻"), "👩\u{200D}💻");
     }
 }

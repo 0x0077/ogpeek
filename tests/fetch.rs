@@ -69,6 +69,14 @@ fn routes(path: &str) -> (String, Vec<u8>, bool) {
             let (h, _, _) = ok("text/html", "");
             (h.replace("connection: close\r\n", ""), b.into_bytes(), true)
         }
+        "/video" => ok(
+            "text/html",
+            "<head><title>Loading</title><link rel=alternate type=application/json+oembed href=/oembed.json></head>",
+        ),
+        "/oembed.json" => ok(
+            "application/json",
+            r#"{"type":"video","title":"Real title","author_name":"Ana","thumbnail_url":"http://127.0.0.1/t.jpg","html":"<iframe></iframe>"}"#,
+        ),
         "/moved" => (
             "HTTP/1.1 301 Moved\r\nlocation: /page\r\nconnection: close\r\n\r\n".into(),
             vec![],
@@ -134,6 +142,17 @@ async fn stops_once_the_preview_is_complete() {
         "took {:?}",
         t.elapsed()
     );
+}
+
+#[tokio::test]
+async fn asks_advertised_oembed_when_the_page_lacks_an_image() {
+    let (base, _) = serve(routes).await;
+    let p = peeker().peek(&format!("{base}/video")).await.unwrap();
+    assert_eq!(p.title.as_deref(), Some("Loading"));
+    assert_eq!(p.image().unwrap().url, "http://127.0.0.1/t.jpg");
+    assert_eq!(p.author.as_deref(), Some("Ana"));
+    assert_eq!(p.kind.as_deref(), Some("video"));
+    assert!(p.embed.as_ref().unwrap().html.is_some());
 }
 
 #[tokio::test]

@@ -1,7 +1,8 @@
 # ogpeek
 
 Fast link previews for Rust. Give it a URL; get back the title, description, image, icon,
-site name, feeds and oEmbed endpoint, usually before the page has finished downloading.
+site name, feeds, the page's JSON-LD subject and the provider's oEmbed answer, usually
+before the page has finished downloading.
 
 ```rust
 let peeker = ogpeek::Peeker::new();
@@ -17,8 +18,9 @@ println!("{:?}", page.favicon);
 A preview lives in the page's `<head>`. Most link preview libraries download the whole page,
 build a DOM, then run selectors over it. ogpeek does less:
 
-- **It stops reading at `</head>`.** The connection is dropped as soon as the head ends,
-  so a large page is answered from its first few kilobytes.
+- **It stops reading as soon as it has the preview.** Once the title, description, image
+  and icon have all been seen, or the head ends, the connection is dropped. A page whose
+  tags sit in the first 18 KB of a 788 KB head is answered from those 18 KB.
 - **One pass over the bytes, no DOM.** The scanner jumps between `<` with `memchr`, reads
   only `<meta>`, `<link>`, `<title>`, `<base>` and `<html>`, and steps over scripts,
   styles and comments without looking inside them.
@@ -62,21 +64,48 @@ Every redirect hop is checked again. Time, bytes and redirects are all capped.
 
 | Field | From |
 |---|---|
-| `title` | `og:title`, `twitter:title`, `<title>`, microdata `name` |
-| `description` | `og:description`, `twitter:description`, `description` |
-| `images` | every `og:image` with width, height, alt, type; then `twitter:image`, `image_src` |
+| `title` | `og:title`, `twitter:title`, a specific JSON-LD entity's name, `<title>` |
+| `description` | `og:description`, `twitter:description`, `description`, JSON-LD |
+| `images` | every `og:image` with width, height, alt, type; then `twitter:image`, `image_src`, JSON-LD |
 | `videos`, `audios` | `og:video`, `og:audio` |
 | `favicon`, `icons` | the largest declared icon, or `/favicon.ico` |
 | `site_name` | `og:site_name`, `application-name` |
 | `canonical` | `<link rel=canonical>`, `og:url` |
 | `feeds` | RSS, Atom and JSON Feed links |
 | `oembed` | the page's JSON oEmbed endpoint |
+| `schema` | the main JSON-LD entity: type, name, description, image, author, date, price |
+| `embed` | the oEmbed answer: title, author, thumbnail, provider and embed HTML |
 | `locale`, `kind`, `author`, `published`, `keywords`, `theme_color`, `twitter` | the matching tags |
 
 Pages in GBK, Big5, Shift_JIS, EUC-KR, Windows-1251 and every other WHATWG encoding are
 decoded. A URL that is an image comes back as a page whose image is itself. A page whose
 head says nothing is searched further, and a `<meta http-equiv=refresh>` placeholder is
 followed once.
+
+## oEmbed
+
+For these sites ogpeek asks the official oEmbed endpoint at the same time as the page,
+and the provider's answer wins for title, image and author. Their pages are often a login
+wall or an empty script shell; the endpoints answer anyway.
+
+YouTube, Vimeo, TikTok, Spotify, SoundCloud, Mixcloud, X (posts), Bluesky (posts),
+Flickr, Dailymotion, TED, Giphy, Loom.
+
+Each was checked against real URLs from a server; none needs an API key. Providers that
+need a token (Instagram, Facebook, Threads) or that answer servers with a block page are
+not listed. Any other page that advertises an endpoint with
+`<link rel="alternate" type="application/json+oembed">` is asked when its own tags lack a
+title or image. `ogpeek::oembed_endpoint` and `ogpeek::parse_oembed` work on their own.
+
+`embed.html` is the provider's embed code. Show it only in a sandboxed iframe.
+
+## JSON-LD
+
+`<script type="application/ld+json">` blocks in the head are read, including `@graph`
+and a page's `mainEntity`. The subject is chosen by type (article, product, video, person
+and so on outrank the website and organization), by whether its `url` is this page, and
+against types repeated as a list (a profile's posts). Blocks placed after `</head>` are not
+read; reaching them would mean downloading the page.
 
 ## Only the parser
 

@@ -10,7 +10,8 @@ use tokio::sync::OnceCell;
 use url::Url;
 
 use crate::net::{Error, Resolver, forbidden_ip};
-use crate::page::{Media, Page};
+use crate::oembed::{oembed_endpoint, parse_oembed};
+use crate::page::{Embed, Media, Page};
 use crate::parse::{decode_html, head_end, parse_bytes, parse_document};
 
 const ACCEPT_HTML: &str = "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5";
@@ -68,6 +69,7 @@ pub struct Builder {
     cache_capacity: usize,
     accept_language: Option<String>,
     follow_refresh: bool,
+    oembed: bool,
     host_headers: Vec<(String, HeaderName, HeaderValue)>,
 }
 
@@ -92,6 +94,7 @@ impl Default for Builder {
             cache_capacity: 4096,
             accept_language: None,
             follow_refresh: true,
+            oembed: true,
             host_headers: Vec::new(),
         }
     }
@@ -165,6 +168,14 @@ impl Builder {
         self
     }
     /// Follow `<meta http-equiv=refresh>` once when the page has nothing else. Default on.
+    /// Use oEmbed. Default on: for the built-in providers (YouTube, TikTok, Vimeo, Spotify,
+    /// SoundCloud, X posts and others, see [`crate::oembed_hosts`]) the endpoint is asked
+    /// alongside the page and its answer wins for title, image and author; for any other
+    /// page, an advertised endpoint is asked only when the page lacks a title or image.
+    pub fn oembed(mut self, yes: bool) -> Self {
+        self.oembed = yes;
+        self
+    }
     pub fn follow_refresh(mut self, yes: bool) -> Self {
         self.follow_refresh = yes;
         self
@@ -289,6 +300,50 @@ impl Peeker {
     }
 
     async fn load(&self, start: &str) -> Result<Page, Error> {
+        let opts = &self.inner.opts;
+        if opts.oembed
+            && let Some(endpoint) = oembed_endpoint(start)
+        {
+            // Known provider: ask both at once. The provider often answers when its page
+            // is a login wall or a script shell.
+            let (page, embed) = tokio::join!(self.load_page(start), self.ask_oembed(&endpoint));
+            return match (page, embed) {
+                (Ok(mut p), Some(e)) => {
+                    p.merge_embed(e, true);
+                    Ok(p)
+                }
+                (Ok(p), None) => Ok(p),
+                (Err(_), Some(e)) => {
+                    let mut p = Page {
+                        url: start.to_owned(),
+                        ..Default::default()
+                    };
+                    p.merge_embed(e, true);
+                    Ok(p)
+                }
+                (Err(e), None) => Err(e),
+            };
+        }
+        let mut page = self.load_page(start).await?;
+        if opts.oembed
+            && (page.title.is_none() || page.images.is_empty())
+            && let Some(endpoint) = page.oembed.clone()
+            && let Some(e) = self.ask_oembed(&endpoint).await
+        {
+            page.merge_embed(e, false);
+        }
+        Ok(page)
+    }
+
+    async fn ask_oembed(&self, endpoint: &str) -> Option<Embed> {
+        let f = self
+            .fetch(endpoint, "application/json", 256 << 10)
+            .await
+            .ok()?;
+        parse_oembed(&f.body)
+    }
+
+    async fn load_page(&self, start: &str) -> Result<Page, Error> {
         let opts = &self.inner.opts;
         let mut target = start.to_owned();
         for hop in 0..2 {
@@ -564,6 +619,37 @@ impl Cache {
             let map = &self.map;
             self.order.retain(|k| map.contains_key(k));
         }
+    }
+}
+
+impl Page {
+    /// Folds an oEmbed answer in. `prefer` lets it override the page's own title, image,
+    /// author and site name; otherwise it only fills gaps.
+    fn merge_embed(&mut self, e: Embed, prefer: bool) {
+        let pick = |own: &mut Option<String>, theirs: &Option<String>| {
+            if theirs.is_some() && (prefer || own.is_none()) {
+                own.clone_from(theirs);
+            }
+        };
+        pick(&mut self.title, &e.title);
+        pick(&mut self.author, &e.author_name);
+        pick(&mut self.site_name, &e.provider_name);
+        if let Some(t) = &e.thumbnail {
+            if prefer {
+                self.images.retain(|m| m.url != t.url);
+                self.images.insert(0, t.clone());
+            } else if self.images.is_empty() {
+                self.images.push(t.clone());
+            }
+        }
+        if self.kind.is_none() {
+            self.kind = match e.kind.as_str() {
+                "video" => Some("video".into()),
+                "photo" => Some("image".into()),
+                _ => None,
+            };
+        }
+        self.embed = Some(e);
     }
 }
 

@@ -68,6 +68,12 @@ pub struct Page {
     /// Target of `<meta http-equiv=refresh>`, when present.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub refresh: Option<String>,
+    /// The main thing the page's JSON-LD (schema.org) describes, when it has any.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub schema: Option<Schema>,
+    /// What the site's oEmbed endpoint said, when one was asked.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub embed: Option<Embed>,
 }
 
 impl Page {
@@ -146,4 +152,66 @@ impl Twitter {
     pub fn is_empty(&self) -> bool {
         self.card.is_none() && self.site.is_none() && self.creator.is_none()
     }
+}
+
+/// A summary of the main entity in a page's JSON-LD: the article, product, video, person
+/// or organization the page is about.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase", default))]
+pub struct Schema {
+    /// The schema.org `@type`, such as `Article`, `Product`, `VideoObject`, `Person`.
+    pub kind: String,
+    /// `headline` or `name`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub name: Option<String>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub description: Option<String>,
+    /// `image`, `thumbnailUrl` or `logo`, absolute.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub image: Option<String>,
+    /// The author's or creator's name.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub author: Option<String>,
+    /// `datePublished`, `uploadDate` or `startDate`, as written.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub published: Option<String>,
+    /// A product's price from `offers`, as written (`"19.99"`).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub price: Option<String>,
+    /// ISO 4217 code from `offers.priceCurrency`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub currency: Option<String>,
+}
+
+/// An oEmbed response.
+///
+/// `html` is the provider's own embed code (usually an `<iframe>` or a `<blockquote>` with a
+/// script). It comes from the provider, not from ogpeek: render it only inside a sandboxed
+/// iframe or after your own sanitizing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase", default))]
+pub struct Embed {
+    /// `video`, `photo`, `rich` or `link`.
+    pub kind: String,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub title: Option<String>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub author_name: Option<String>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub author_url: Option<String>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub provider_name: Option<String>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub provider_url: Option<String>,
+    /// The thumbnail, or for a `photo` the photo itself.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub thumbnail: Option<Media>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub html: Option<String>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub width: Option<u32>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub height: Option<u32>,
 }

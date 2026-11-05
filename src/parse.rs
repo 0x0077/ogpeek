@@ -12,7 +12,7 @@ use encoding_rs::{Encoding, UTF_8};
 use memchr::{memchr, memmem};
 use url::Url;
 
-use crate::entities::decode;
+use crate::entities::{clean_text, decode};
 use crate::page::{Feed, Icon, Media, Page, Twitter};
 
 const MAX_IMAGES: usize = 16;
@@ -20,6 +20,8 @@ const MAX_ICONS: usize = 16;
 const MAX_FEEDS: usize = 8;
 const MAX_KEYWORDS: usize = 24;
 const MAX_ATTRS: usize = 32;
+const MAX_LD_BLOCKS: usize = 8;
+const MAX_LD_BYTES: usize = 1 << 20;
 
 /// Reads a page's metadata from HTML text.
 ///
@@ -189,12 +191,19 @@ fn scan(html: &str, url: &str, head_only: bool) -> Page {
         } else if is("title") {
             let (text, next) = raw_text(b, html, end, b"title");
             if c.title_tag.is_none() {
-                c.title_tag = some(decode(text));
+                c.title_tag = some(clean_text(text));
             }
             i = next;
             continue;
         } else if is("script") || is("style") || is("template") || is("textarea") {
-            i = raw_text(b, html, end, name.as_bytes()).1;
+            let (body, next) = raw_text(b, html, end, name.as_bytes());
+            if is("script")
+                && attr(&attrs, "type")
+                    .is_some_and(|t| t.trim().eq_ignore_ascii_case("application/ld+json"))
+            {
+                c.json_ld(body);
+            }
+            i = next;
             continue;
         } else if is("base") {
             c.base(&attrs);
@@ -300,7 +309,7 @@ fn some(s: String) -> Option<String> {
 
 fn set(slot: &mut Option<String>, v: &str) {
     if slot.is_none() {
-        *slot = some(decode(v));
+        *slot = some(clean_text(v));
     }
 }
 
@@ -340,6 +349,8 @@ struct Collector {
     feeds: Vec<Feed>,
     oembed: Option<String>,
     refresh: Option<String>,
+    ld: Vec<String>,
+    ld_bytes: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -525,7 +536,7 @@ impl Collector {
             }
             "twitter:image:alt" => {
                 if let Some(m) = &mut self.tw_image {
-                    m.alt = m.alt.take().or_else(|| some(decode(content)));
+                    m.alt = m.alt.take().or_else(|| some(clean_text(content)));
                 }
             }
             "twitter:card" => set(&mut self.twitter.card, content),
@@ -538,7 +549,7 @@ impl Collector {
             "article:author" => set(&mut self.article_author, content),
             "article:published_time" | "date" | "pubdate" => set(&mut self.published, content),
             "keywords" if self.keywords.is_empty() => {
-                self.keywords = decode(content)
+                self.keywords = clean_text(content)
                     .split([',', '，'])
                     .map(str::trim)
                     .filter(|k| !k.is_empty())
@@ -584,7 +595,7 @@ impl Collector {
                     m @ ("application/rss+xml" | "application/atom+xml" | "application/feed+json"),
                 ) if self.feeds.len() < MAX_FEEDS => {
                     if let Some(url) = self.abs(href) {
-                        let title = attr(attrs, "title").and_then(|t| some(decode(t)));
+                        let title = attr(attrs, "title").and_then(|t| some(clean_text(t)));
                         self.feeds.push(Feed {
                             url,
                             title,
@@ -602,7 +613,30 @@ impl Collector {
         }
     }
 
-    fn finish(self) -> Page {
+    fn json_ld(&mut self, body: &str) {
+        if self.ld.len() < MAX_LD_BLOCKS && self.ld_bytes + body.len() <= MAX_LD_BYTES {
+            self.ld_bytes += body.len();
+            self.ld.push(body.to_owned());
+        }
+    }
+
+    fn finish(mut self) -> Page {
+        let ld = std::mem::take(&mut self.ld);
+        let urls: Vec<&str> = [
+            Some(self.url.as_str()),
+            self.canonical.as_deref(),
+            self.og_url.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let schema = crate::jsonld::summarize(&ld, &urls, |u| self.abs(u));
+        // A specific entity (article, product, video, person) names the page better than <title>.
+        let (strong, schema) = match schema {
+            Some((s, w)) => (w >= 8, Some(s)),
+            None => (false, None),
+        };
+        let sc = schema.clone().unwrap_or_default();
         let mut images: Vec<Media> = self
             .images
             .into_iter()
@@ -613,6 +647,12 @@ impl Collector {
                 .tw_image
                 .or_else(|| {
                     self.image_src.map(|url| Media {
+                        url,
+                        ..Default::default()
+                    })
+                })
+                .or_else(|| {
+                    sc.image.clone().map(|url| Media {
                         url,
                         ..Default::default()
                     })
@@ -644,9 +684,16 @@ impl Collector {
             title: self
                 .og_title
                 .or(self.tw_title)
+                .or(sc.name.clone().filter(|_| strong))
                 .or(self.title_tag)
-                .or(self.md_name),
-            description: self.og_desc.or(self.tw_desc).or(self.desc).or(self.md_desc),
+                .or(self.md_name)
+                .or(sc.name.clone()),
+            description: self
+                .og_desc
+                .or(self.tw_desc)
+                .or(self.desc)
+                .or(self.md_desc)
+                .or(sc.description.clone()),
             site_name: self.og_site.or(self.app_name),
             kind: self.kind,
             locale: self.og_locale.or(self.html_lang),
@@ -665,14 +712,19 @@ impl Collector {
             icons: self.icons,
             favicon,
             theme_color: self.theme,
-            author: self.author.or(self.article_author),
-            published: self.published,
+            author: self
+                .author
+                .or(self.article_author)
+                .or(sc.author.clone().filter(|_| strong)),
+            published: self.published.or(sc.published.clone()),
             keywords: self.keywords,
             twitter: self.twitter,
             feeds: self.feeds,
             oembed: self.oembed,
             content_type: None,
             refresh: self.refresh,
+            schema,
+            embed: None,
         }
     }
 }

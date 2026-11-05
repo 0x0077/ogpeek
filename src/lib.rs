@@ -12,6 +12,9 @@
 //! - **Safe on a server.** Hosts that resolve to private, loopback, link-local or cloud
 //!   metadata addresses are refused, at the resolver, for every redirect hop. Sizes,
 //!   redirects and time are capped.
+//! - **Asks the source.** For YouTube, TikTok, Vimeo, Spotify, SoundCloud, X posts and
+//!   other providers, the official oEmbed endpoint is asked alongside the page. JSON-LD in
+//!   the head fills what Open Graph leaves out.
 //! - **Any language.** Pages in GBK, Shift_JIS, EUC-KR, Windows-1251 and the other WHATWG
 //!   encodings are decoded correctly.
 //!
@@ -31,6 +34,8 @@
 //! [`parse_bytes`] take HTML you already have.
 
 mod entities;
+mod jsonld;
+mod oembed;
 mod page;
 mod parse;
 
@@ -39,8 +44,9 @@ mod net;
 #[cfg(feature = "fetch")]
 mod peeker;
 
-pub use entities::decode;
-pub use page::{Feed, Icon, Media, Page, Twitter};
+pub use entities::{clean_text, decode};
+pub use oembed::{oembed_endpoint, oembed_hosts, parse_oembed};
+pub use page::{Embed, Feed, Icon, Media, Page, Schema, Twitter};
 pub use parse::{decode_html, parse, parse_bytes, parse_document};
 
 #[cfg(feature = "fetch")]
